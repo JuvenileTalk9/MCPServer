@@ -5,11 +5,28 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python デバッガー: 現在のファイル",
+            "name": "Python デバッガー: book_search_api",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
-            "console": "integratedTerminal"
+            "module": "uvicorn",
+            "args": [
+                "main:app",
+                "--reload"
+            ],
+            "cwd": "${workspaceFolder}/external_api/book_search_api",
+            "jinja": true
+        },
+        {
+            "name": "Python デバッガー: book_api",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "main:app",
+                "--reload"
+            ],
+            "cwd": "${workspaceFolder}/external_api/book_api",
+            "jinja": true
         }
     ]
 }
