@@ -22,7 +22,7 @@ def get_db_connection():
     return conn
 
 
-@app.get("/books/search")
+@app.get("/books/read")
 def read_books(
     title: Optional[str] = None,
     author: Optional[str] = None,

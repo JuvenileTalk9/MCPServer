@@ -9,7 +9,7 @@ API_BASE = "http://127.0.0.1:8000"
 
 
 @mcp.tool()
-def search_books(
+def read_books(
     title: str | None = None,
     author: str | None = None,
     publisher: str | None = None,
@@ -35,7 +35,7 @@ def search_books(
     if publisher:
         params["publisher"] = publisher
 
-    response = httpx.get(f"{API_BASE}/books/search", params=params)
+    response = httpx.get(f"{API_BASE}/books/read", params=params)
     return response.text
 
 
