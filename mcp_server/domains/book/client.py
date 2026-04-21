@@ -40,17 +40,17 @@ class BookClient:
             params["publisher"] = publisher
 
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.book_api_base}/books/read",
-                params=params,
-            )
             try:
+                response = await client.get(
+                    f"{self.book_api_base}/books/read",
+                    params=params,
+                )
                 response.raise_for_status()
+                return response.text
             except httpx.HTTPStatusError as e:
                 if 400 <= e.response.status_code < 500:
                     return f"書籍管理サーバが停止している可能性があります。{e.response.status_code} {e.response.text}"
                 raise
-        return response.text
 
     async def add_book(self, title: str, author: str, publisher: str) -> str:
         """書籍を登録する
@@ -72,14 +72,16 @@ class BookClient:
         }
 
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"{self.book_api_base}/books/add", json=data)
             try:
+                response = await client.post(
+                    f"{self.book_api_base}/books/add", json=data
+                )
                 response.raise_for_status()
+                return response.text
             except httpx.HTTPStatusError as e:
                 if 400 <= e.response.status_code < 500:
                     return f"書籍管理サーバが停止している可能性があります。{e.response.status_code} {e.response.text}"
                 raise
-        return response.text
 
     async def search_books(self, keyword: str, max_results: int | None = 10) -> dict:
         """
