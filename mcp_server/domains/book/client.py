@@ -1,5 +1,8 @@
 import os
 import httpx
+from shared.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class BookClient:
@@ -48,6 +51,11 @@ class BookClient:
                 response.raise_for_status()
                 return response.text
             except httpx.HTTPStatusError as e:
+                logger.error(
+                    "read_books HTTPエラー: %s %s",
+                    e.response.status_code,
+                    e.response.text,
+                )
                 if 400 <= e.response.status_code < 500:
                     return f"書籍管理サーバが停止している可能性があります。{e.response.status_code} {e.response.text}"
                 raise
@@ -79,6 +87,11 @@ class BookClient:
                 response.raise_for_status()
                 return response.text
             except httpx.HTTPStatusError as e:
+                logger.error(
+                    "add_book HTTPエラー: %s %s",
+                    e.response.status_code,
+                    e.response.text,
+                )
                 if 400 <= e.response.status_code < 500:
                     return f"書籍管理サーバが停止している可能性があります。{e.response.status_code} {e.response.text}"
                 raise
@@ -101,11 +114,17 @@ class BookClient:
                 )
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
+                logger.error(
+                    "search_books HTTPエラー: %s %s",
+                    e.response.status_code,
+                    e.response.text,
+                )
                 return {
                     "status_code": e.response.status_code,
                     "detail": "Google Books APIエラー",
                 }
-            except httpx.RequestError:
+            except httpx.RequestError as e:
+                logger.error("search_books 接続エラー: %s", e)
                 return {
                     "status_code": 503,
                     "detail": "Google Books APIに接続できませんでした",

@@ -1,6 +1,9 @@
 import os
 from datetime import datetime, timezone, timedelta
 import httpx
+from shared.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class WeatherClient:
@@ -36,16 +39,20 @@ class WeatherClient:
                 return self._format_weather_response(response.json())
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
-                    print(f"都市 {city} が見つかりませんでした。")
+                    logger.error("fetch_weather_data 都市未発見: city=%s", city)
                 elif e.response.status_code == 401:
-                    print("APIキーが無効です。OpenWeather_API_KEY を確認してください。")
+                    logger.error("fetch_weather_data APIキー無効: status=401")
                 else:
-                    print(
-                        f"HTTPエラーが発生しました: {e.response.status_code} - {e.response.text}"
+                    logger.error(
+                        "fetch_weather_data HTTPエラー: %s %s",
+                        e.response.status_code,
+                        e.response.text,
                     )
                 return None
             except Exception as e:
-                print(f"天気情報の取得中にエラーが発生しました: {e}")
+                logger.error(
+                    "fetch_weather_data 予期しないエラー: %s", e, exc_info=True
+                )
                 return None
 
     def _format_weather_response(self, data: dict) -> str:
@@ -59,6 +66,8 @@ class WeatherClient:
         """
         if not data:
             return "天気情報を取得できませんでした。"
+
+        logger.info("fetch_weather_data APIレスポンス: %s", data)
 
         # ロケーション情報
         city = data.get("name", "不明な都市")
@@ -91,8 +100,16 @@ class WeatherClient:
         tz = timezone(timedelta(seconds=timezone_offset))
         sunrise_ts = sys_data.get("sunrise")
         sunset_ts = sys_data.get("sunset")
-        sunrise = datetime.fromtimestamp(sunrise_ts, tz=tz).strftime("%H:%M") if sunrise_ts else "不明"
-        sunset = datetime.fromtimestamp(sunset_ts, tz=tz).strftime("%H:%M") if sunset_ts else "不明"
+        sunrise = (
+            datetime.fromtimestamp(sunrise_ts, tz=tz).strftime("%H:%M")
+            if sunrise_ts
+            else "不明"
+        )
+        sunset = (
+            datetime.fromtimestamp(sunset_ts, tz=tz).strftime("%H:%M")
+            if sunset_ts
+            else "不明"
+        )
 
         # フォーマットされた回答を生成
         response = f"""
