@@ -5,18 +5,6 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python デバッガー: book_search_api",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "uvicorn",
-            "args": [
-                "main:app",
-                "--reload"
-            ],
-            "cwd": "${workspaceFolder}/external_api/book_search_api",
-            "jinja": true
-        },
-        {
             "name": "Python デバッガー: book_api",
             "type": "debugpy",
             "request": "launch",
@@ -26,7 +14,27 @@
                 "--reload"
             ],
             "cwd": "${workspaceFolder}/external_api/book_api",
-            "jinja": true
+            "jinja": true,
+            "python": "${workspaceFolder}/external_api/.venv/Scripts/python.exe",
+        },
+        {
+            "name": "Python デバッガー: MCPサーバ",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/mcp_server/main.py",
+            "args": [
+                "--transport",
+                "streamable-http",
+                "--port",
+                "8765"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/mcp_server"
+            },
+            "envFile": "${workspaceFolder}/mcp_server/.env",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "${workspaceFolder}/mcp_server/.venv/Scripts/python.exe",
         }
     ]
 }

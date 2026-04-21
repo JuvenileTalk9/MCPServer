@@ -1,5 +1,13 @@
 # 外部API
 
+## 環境構築
+
+```sh
+cd external_api
+uv init
+uv add fastapi httpx uvicorn python-dotenv
+```
+
 ## 書籍管理API（book_api）
 
 ローカルデータベースで書籍のタイトル・著者・出版社をデータとして持つレコードを管理する。
@@ -37,22 +45,4 @@ WindowsのコマンドプロンプトやPower Shellではエラーが発生す�
 
 ```curl
 curl -X POST -H "Content-Type: application/json" -d '{"title": "abcde", "author": "xzy", "publisher": "テスト文庫"}' http://127.0.0.1:8000/books/add
-```
-
-## 書籍管理API（book_search_api）
-
-Google Books APIを用いてインターネットから書籍情報を検索する。
-
-### 起動方法
-
-```sh
-uv run uvicorn main:app --reload
-```
-
-### アクセス例
-
-#### Get
-
-```curl
-curl http://127.0.0.1:8000/books/search?q=mcp
 ```
