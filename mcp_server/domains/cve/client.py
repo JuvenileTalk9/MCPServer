@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime, timezone, timedelta
 import httpx
@@ -8,6 +9,7 @@ logger = get_logger(__name__)
 NVD_BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 NVD_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S.000+00:00"
 NVD_MAX_DATE_RANGE_DAYS = 120
+NVD_RATE_LIMIT_SLEEP = 6  # NVD推奨: リクエスト間隔6秒以上
 
 
 class CVEClient:
@@ -21,40 +23,19 @@ class CVEClient:
             return {"apiKey": self.api_key}
         return {}
 
-    def _build_date_params(self, days: int) -> dict:
-        days = min(days, NVD_MAX_DATE_RANGE_DAYS)
-        now = datetime.now(tz=timezone.utc)
-        start = now - timedelta(days=days)
+    def _build_date_params(self, start: datetime, end: datetime) -> dict:
         return {
             "pubStartDate": start.strftime(NVD_DATETIME_FORMAT),
-            "pubEndDate": now.strftime(NVD_DATETIME_FORMAT),
+            "pubEndDate": end.strftime(NVD_DATETIME_FORMAT),
         }
 
-    async def fetch_cve_by_oss(
-        self,
-        oss_name: str,
-        version: str | None = None,
-        limit: int = 10,
-        days: int | None = None,
-    ) -> str | None:
-        """指定したOSSのCVE情報をNVDから取得する
-
-        Args:
-            oss_name (str): OSSの名前
-            version (str | None): バージョン（省略時は全バージョン）
-            limit (int): 最大取得件数
-            days (int | None): 指定した日数以内に公開されたCVEのみ取得（最大120日、省略時は全期間）
+    async def _fetch_one_chunk(self, params: dict) -> tuple[list, int] | str:
+        """1チャンク分のAPIリクエストを実行する。
 
         Returns:
-            str | None: 整形されたCVE情報、エラーの場合はNone
+            tuple[list, int]: (vulnerabilities, totalResults) — 成功時
+            str: レート制限エラーメッセージ — 429発生時
         """
-        keyword = f"{oss_name} {version}" if version else oss_name
-        params: dict = {
-            "keywordSearch": keyword,
-            "resultsPerPage": min(limit, 20),
-        }
-        if days is not None:
-            params.update(self._build_date_params(days))
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.get(
@@ -65,32 +46,119 @@ class CVEClient:
                 )
                 response.raise_for_status()
                 data = response.json()
-                logger.info(
-                    "fetch_cve_by_oss: keyword=%s, days=%s, total=%s",
-                    keyword,
-                    days,
-                    data.get("totalResults"),
-                )
-                actual_days = min(days, NVD_MAX_DATE_RANGE_DAYS) if days is not None else None
-                title = f"{keyword} の CVE情報"
-                if actual_days is not None:
-                    title += f"（直近{actual_days}日間）"
-                vulnerabilities = sorted(
-                    data.get("vulnerabilities", []),
-                    key=lambda x: x.get("cve", {}).get("published", ""),
-                    reverse=True,
-                )
-                return self._format_cve_list(data, vulnerabilities, title=title)
+                return data.get("vulnerabilities", []), data.get("totalResults", 0)
             except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    retry_after = e.response.headers.get("Retry-After", "しばらく")
+                    logger.error("_fetch_one_chunk レート制限: Retry-After=%s", retry_after)
+                    return f"NVD APIのレート制限に達しました。{retry_after}秒後に再試行してください。"
                 logger.error(
-                    "fetch_cve_by_oss HTTPエラー: %s %s",
+                    "_fetch_one_chunk HTTPエラー: %s %s",
                     e.response.status_code,
                     e.response.text,
                 )
-                return None
+                return [], 0
             except Exception as e:
-                logger.error("fetch_cve_by_oss 予期しないエラー: %s", e, exc_info=True)
-                return None
+                logger.error("_fetch_one_chunk 予期しないエラー: %s", e, exc_info=True)
+                return [], 0
+
+    async def fetch_cve_by_oss(
+        self,
+        oss_name: str,
+        version: str | None = None,
+        limit: int = 10,
+        days: int | None = None,
+    ) -> str | None:
+        """指定したOSSのCVE情報をNVDから取得する
+
+        daysが120日を超える場合は120日チャンクに分割して順次取得します。
+        NVDのレート制限（APIキーなし: 5リクエスト/30秒）を考慮し、
+        チャンク間に6秒のスリープを挟みます。
+
+        Args:
+            oss_name (str): OSSの名前
+            version (str | None): バージョン（省略時は全バージョン）
+            limit (int): 取得する最大件数（1〜20）
+            days (int | None): 指定した日数以内のCVEを取得。120日超は分割取得。省略時は直近120日。
+
+        Returns:
+            str | None: CVE情報の文字列。エラーの場合はNone。
+        """
+        keyword = f"{oss_name} {version}" if version else oss_name
+        days = days if days is not None else NVD_MAX_DATE_RANGE_DAYS
+
+        try:
+            now = datetime.now(tz=timezone.utc)
+            overall_start = now - timedelta(days=days)
+
+            # 新しい順にチャンクを生成（chunk_end → chunk_start の順で遡る）
+            chunks: list[tuple[datetime, datetime]] = []
+            chunk_end = now
+            while chunk_end > overall_start:
+                chunk_start = max(
+                    chunk_end - timedelta(days=NVD_MAX_DATE_RANGE_DAYS),
+                    overall_start,
+                )
+                chunks.append((chunk_start, chunk_end))
+                chunk_end = chunk_start
+
+            all_vulnerabilities: dict[str, dict] = {}  # CVE ID → item（重複排除）
+            total = 0
+            rate_limited = False
+
+            for i, (chunk_start, chunk_end) in enumerate(chunks):
+                if i > 0:
+                    await asyncio.sleep(NVD_RATE_LIMIT_SLEEP)
+
+                params = {
+                    "keywordSearch": keyword,
+                    "resultsPerPage": 20,  # チャンクごとに最大件数取得
+                    **self._build_date_params(chunk_start, chunk_end),
+                }
+                result = await self._fetch_one_chunk(params)
+
+                if isinstance(result, str):
+                    # レート制限: 取得済み分があれば継続、なければそのまま返す
+                    logger.error("チャンク%d/%d でレート制限発生", i + 1, len(chunks))
+                    if not all_vulnerabilities:
+                        return result
+                    rate_limited = True
+                    break
+
+                chunk_vulns, chunk_total = result
+                total += chunk_total
+                logger.info(
+                    "fetch_cve_by_oss chunk %d/%d: %s〜%s, 取得=%d件 / 全%d件",
+                    i + 1, len(chunks),
+                    chunk_start.strftime("%Y-%m-%d"),
+                    chunk_end.strftime("%Y-%m-%d"),
+                    len(chunk_vulns),
+                    chunk_total,
+                )
+                for item in chunk_vulns:
+                    cve_id = item.get("cve", {}).get("id")
+                    if cve_id and cve_id not in all_vulnerabilities:
+                        all_vulnerabilities[cve_id] = item
+
+            vulnerabilities = list(all_vulnerabilities.values())
+            title = f"{keyword} の CVE情報（直近{days}日間）"
+            if rate_limited:
+                title += " ※レート制限により途中までの結果です。しばらく待ってから再試行してください。"
+
+            vulnerabilities = sorted(
+                vulnerabilities,
+                key=lambda x: x.get("cve", {}).get("published", ""),
+                reverse=True,
+            )[:limit]
+
+            logger.info(
+                "fetch_cve_by_oss: keyword=%s, days=%s, total=%s", keyword, days, total
+            )
+            return self._format_cve_list(vulnerabilities, total, title=title)
+
+        except Exception as e:
+            logger.error("fetch_cve_by_oss 予期しないエラー: %s", e, exc_info=True)
+            return None
 
     async def fetch_new_cves(self, days: int = 7, limit: int = 10) -> str | None:
         """直近N日間に公開されたCVE情報をNVDから取得する
@@ -103,8 +171,9 @@ class CVEClient:
             str | None: 整形されたCVE情報、エラーの場合はNone
         """
         actual_days = min(days, NVD_MAX_DATE_RANGE_DAYS)
+        now = datetime.now(tz=timezone.utc)
         params = {
-            **self._build_date_params(actual_days),
+            **self._build_date_params(now - timedelta(days=actual_days), now),
             "resultsPerPage": min(limit, 20),
         }
         async with httpx.AsyncClient() as client:
@@ -121,8 +190,15 @@ class CVEClient:
                     "fetch_new_cves: days=%s, total=%s", actual_days, data.get("totalResults")
                 )
                 vulnerabilities = data.get("vulnerabilities", [])
-                return self._format_cve_list(data, vulnerabilities, title=f"直近{actual_days}日間の新着CVE情報")
+                return self._format_cve_list(
+                    vulnerabilities, data.get("totalResults", 0),
+                    title=f"直近{actual_days}日間の新着CVE情報",
+                )
             except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    retry_after = e.response.headers.get("Retry-After", "しばらく")
+                    logger.error("fetch_new_cves レート制限: Retry-After=%s", retry_after)
+                    return f"NVD APIのレート制限に達しました。{retry_after}秒後に再試行してください。"
                 logger.error(
                     "fetch_new_cves HTTPエラー: %s %s",
                     e.response.status_code,
@@ -133,9 +209,7 @@ class CVEClient:
                 logger.error("fetch_new_cves 予期しないエラー: %s", e, exc_info=True)
                 return None
 
-    def _format_cve_list(self, data: dict, vulnerabilities: list, title: str) -> str:
-        total = data.get("totalResults", 0)
-
+    def _format_cve_list(self, vulnerabilities: list, total: int, title: str) -> str:
         if not vulnerabilities:
             return f"{title}\n\n該当するCVEは見つかりませんでした。"
 

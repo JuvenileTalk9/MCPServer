@@ -21,7 +21,7 @@ def register(mcp: FastMCP) -> None:
             oss_name (str): CVEを検索するOSSの名前（例: "openssl", "log4j", "nginx"）
             version (str | None): バージョン（例: "3.0.0"）。省略時は全バージョンを対象に検索します。
             limit (int): 取得する最大件数（1〜20、デフォルト: 10）
-            days (int | None): 指定した日数以内に公開されたCVEのみ取得（最大120日、例: 90）。省略時は全期間が対象。
+            days (int | None): 指定した日数以内に公開されたCVEのみ取得（例: 180, 365）。120日超は分割取得。省略時は直近120日が対象。
 
         Returns:
             str | None: CVE情報の文字列。エラーの場合はNone。
