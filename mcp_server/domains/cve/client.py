@@ -6,6 +6,8 @@ from shared.logger import get_logger
 logger = get_logger(__name__)
 
 NVD_BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+NVD_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S.000+00:00"
+NVD_MAX_DATE_RANGE_DAYS = 120
 
 
 class CVEClient:
@@ -19,8 +21,21 @@ class CVEClient:
             return {"apiKey": self.api_key}
         return {}
 
+    def _build_date_params(self, days: int) -> dict:
+        days = min(days, NVD_MAX_DATE_RANGE_DAYS)
+        now = datetime.now(tz=timezone.utc)
+        start = now - timedelta(days=days)
+        return {
+            "pubStartDate": start.strftime(NVD_DATETIME_FORMAT),
+            "pubEndDate": now.strftime(NVD_DATETIME_FORMAT),
+        }
+
     async def fetch_cve_by_oss(
-        self, oss_name: str, version: str | None = None, limit: int = 10
+        self,
+        oss_name: str,
+        version: str | None = None,
+        limit: int = 10,
+        days: int | None = None,
     ) -> str | None:
         """指定したOSSのCVE情報をNVDから取得する
 
@@ -28,15 +43,18 @@ class CVEClient:
             oss_name (str): OSSの名前
             version (str | None): バージョン（省略時は全バージョン）
             limit (int): 最大取得件数
+            days (int | None): 指定した日数以内に公開されたCVEのみ取得（最大120日、省略時は全期間）
 
         Returns:
             str | None: 整形されたCVE情報、エラーの場合はNone
         """
         keyword = f"{oss_name} {version}" if version else oss_name
-        params = {
+        params: dict = {
             "keywordSearch": keyword,
             "resultsPerPage": min(limit, 20),
         }
+        if days is not None:
+            params.update(self._build_date_params(days))
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.get(
@@ -48,11 +66,21 @@ class CVEClient:
                 response.raise_for_status()
                 data = response.json()
                 logger.info(
-                    "fetch_cve_by_oss: keyword=%s, total=%s",
+                    "fetch_cve_by_oss: keyword=%s, days=%s, total=%s",
                     keyword,
+                    days,
                     data.get("totalResults"),
                 )
-                return self._format_cve_list(data, title=f"{keyword} の CVE情報")
+                actual_days = min(days, NVD_MAX_DATE_RANGE_DAYS) if days is not None else None
+                title = f"{keyword} の CVE情報"
+                if actual_days is not None:
+                    title += f"（直近{actual_days}日間）"
+                vulnerabilities = sorted(
+                    data.get("vulnerabilities", []),
+                    key=lambda x: x.get("cve", {}).get("published", ""),
+                    reverse=True,
+                )
+                return self._format_cve_list(data, vulnerabilities, title=title)
             except httpx.HTTPStatusError as e:
                 logger.error(
                     "fetch_cve_by_oss HTTPエラー: %s %s",
@@ -68,17 +96,15 @@ class CVEClient:
         """直近N日間に公開されたCVE情報をNVDから取得する
 
         Args:
-            days (int): 何日前までのCVEを取得するか
+            days (int): 何日前までのCVEを取得するか（最大120日）
             limit (int): 最大取得件数
 
         Returns:
             str | None: 整形されたCVE情報、エラーの場合はNone
         """
-        now = datetime.now(tz=timezone.utc)
-        start = now - timedelta(days=days)
+        actual_days = min(days, NVD_MAX_DATE_RANGE_DAYS)
         params = {
-            "pubStartDate": start.strftime("%Y-%m-%dT%H:%M:%S.000"),
-            "pubEndDate": now.strftime("%Y-%m-%dT%H:%M:%S.000"),
+            **self._build_date_params(actual_days),
             "resultsPerPage": min(limit, 20),
         }
         async with httpx.AsyncClient() as client:
@@ -92,9 +118,10 @@ class CVEClient:
                 response.raise_for_status()
                 data = response.json()
                 logger.info(
-                    "fetch_new_cves: days=%s, total=%s", days, data.get("totalResults")
+                    "fetch_new_cves: days=%s, total=%s", actual_days, data.get("totalResults")
                 )
-                return self._format_cve_list(data, title=f"直近{days}日間の新着CVE情報")
+                vulnerabilities = data.get("vulnerabilities", [])
+                return self._format_cve_list(data, vulnerabilities, title=f"直近{actual_days}日間の新着CVE情報")
             except httpx.HTTPStatusError as e:
                 logger.error(
                     "fetch_new_cves HTTPエラー: %s %s",
@@ -106,18 +133,8 @@ class CVEClient:
                 logger.error("fetch_new_cves 予期しないエラー: %s", e, exc_info=True)
                 return None
 
-    def _format_cve_list(self, data: dict, title: str) -> str:
-        """CVEリストを人間が読みやすい形式に整形する
-
-        Args:
-            data (dict): NVD APIからのレスポンスデータ
-            title (str): 出力のタイトル
-
-        Returns:
-            str: 整形されたCVE情報の文字列
-        """
+    def _format_cve_list(self, data: dict, vulnerabilities: list, title: str) -> str:
         total = data.get("totalResults", 0)
-        vulnerabilities = data.get("vulnerabilities", [])
 
         if not vulnerabilities:
             return f"{title}\n\n該当するCVEは見つかりませんでした。"
@@ -155,22 +172,12 @@ class CVEClient:
         return "\n".join(lines).strip()
 
     def _extract_cvss(self, metrics: dict) -> tuple[str | None, str | None]:
-        """CVSSスコアと深刻度を抽出する（v3.1 → v3.0 → v2.0 の優先順）
-
-        Args:
-            metrics (dict): CVEのmetricsフィールド
-
-        Returns:
-            tuple[str | None, str | None]: (スコア, 深刻度)
-        """
         for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
             entries = metrics.get(key, [])
             if entries:
                 cvss_data = entries[0].get("cvssData", {})
                 score = cvss_data.get("baseScore")
-                severity = cvss_data.get("baseSeverity") or entries[0].get(
-                    "baseSeverity"
-                )
+                severity = cvss_data.get("baseSeverity") or entries[0].get("baseSeverity")
                 if score:
                     return str(score), severity
         return None, None

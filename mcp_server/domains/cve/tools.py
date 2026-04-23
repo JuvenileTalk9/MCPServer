@@ -6,25 +6,29 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     async def get_cve_by_oss(
-        oss_name: str, version: str | None = None, limit: int = 10
+        oss_name: str,
+        version: str | None = None,
+        limit: int = 10,
+        days: int | None = None,
     ) -> str | None:
         """指定したOSSに関連するCVE情報を取得する
 
         OSSの名前（およびバージョン）を入力として受け取り、NVD（National Vulnerability Database）から
-        該当するCVE（Common Vulnerabilities and Exposures）情報を返します。
+        該当するCVE（Common Vulnerabilities and Exposures）情報を新しい順に返します。
         CVSSスコアや深刻度、脆弱性の概要を含む一覧を返します。
 
         Args:
             oss_name (str): CVEを検索するOSSの名前（例: "openssl", "log4j", "nginx"）
             version (str | None): バージョン（例: "3.0.0"）。省略時は全バージョンを対象に検索します。
             limit (int): 取得する最大件数（1〜20、デフォルト: 10）
+            days (int | None): 指定した日数以内に公開されたCVEのみ取得（最大120日、例: 90）。省略時は全期間が対象。
 
         Returns:
             str | None: CVE情報の文字列。エラーの場合はNone。
         """
         client = CVEClient()
         return await client.fetch_cve_by_oss(
-            oss_name=oss_name, version=version, limit=limit
+            oss_name=oss_name, version=version, limit=limit, days=days
         )
 
     @mcp.tool()
