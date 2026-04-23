@@ -32,6 +32,23 @@ def register(mcp: FastMCP) -> None:
         )
 
     @mcp.tool()
+    async def get_cve_detail(cve_id: str) -> str | None:
+        """CVE IDを指定してCVEの詳細情報を取得する
+
+        CVE IDを入力として受け取り、NVD（National Vulnerability Database）から
+        該当するCVEの詳細情報を返します。
+        公開日・最終更新日・深刻度・CVSSスコア・概要・影響バージョン・参考URLを含みます。
+
+        Args:
+            cve_id (str): CVE ID（例: "CVE-2021-44228"）
+
+        Returns:
+            str | None: CVE詳細情報の文字列。エラーの場合はNone。
+        """
+        client = CVEClient()
+        return await client.fetch_cve_by_id(cve_id=cve_id)
+
+    @mcp.tool()
     async def get_new_cves(days: int = 7, limit: int = 10) -> str | None:
         """最近公開されたCVE情報を取得する
 

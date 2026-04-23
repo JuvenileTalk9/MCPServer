@@ -251,6 +251,85 @@ class CVEClient:
 
         return "\n".join(lines).strip()
 
+    async def fetch_cve_by_id(self, cve_id: str) -> str | None:
+        """CVE IDを指定してCVEの詳細情報をNVDから取得する
+
+        Args:
+            cve_id (str): CVE ID（例: "CVE-2021-44228"）
+
+        Returns:
+            str | None: 整形されたCVE詳細情報、エラーの場合はNone
+        """
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(
+                    self.base_url,
+                    params={"cveId": cve_id},
+                    headers=self._build_headers(),
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+                vulnerabilities = data.get("vulnerabilities", [])
+                if not vulnerabilities:
+                    return f"{cve_id} は見つかりませんでした。"
+                cve = vulnerabilities[0].get("cve", {})
+                logger.info("fetch_cve_by_id: cve_id=%s", cve_id)
+                return self._format_cve_detail(cve)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    retry_after = e.response.headers.get("Retry-After", "しばらく")
+                    logger.error("fetch_cve_by_id レート制限: Retry-After=%s", retry_after)
+                    return f"NVD APIのレート制限に達しました。{retry_after}秒後に再試行してください。"
+                logger.error(
+                    "fetch_cve_by_id HTTPエラー: %s %s",
+                    e.response.status_code,
+                    e.response.text,
+                )
+                return None
+            except Exception as e:
+                logger.error("fetch_cve_by_id 予期しないエラー: %s", e, exc_info=True)
+                return None
+
+    def _format_cve_detail(self, cve: dict) -> str:
+        cve_id = cve.get("id", "不明")
+        published = cve.get("published", "")[:10]
+        last_modified = cve.get("lastModified", "")[:10]
+        vuln_status = cve.get("vulnStatus", "不明")
+
+        descriptions = cve.get("descriptions", [])
+        description = next(
+            (d["value"] for d in descriptions if d.get("lang") == "en"),
+            "説明なし",
+        )
+
+        score, severity = self._extract_cvss(cve.get("metrics", {}))
+
+        affected = self._extract_affected_versions(cve)
+
+        references = [
+            ref.get("url", "")
+            for ref in cve.get("references", [])
+            if ref.get("url")
+        ]
+
+        lines = [
+            f"【{cve_id}】",
+            f"  公開日: {published} | 最終更新: {last_modified} | ステータス: {vuln_status}",
+        ]
+        if score:
+            lines.append(f"  深刻度: {severity} (CVSSスコア: {score})")
+        lines.append(f"  概要: {description}")
+        if affected:
+            lines.append("  影響バージョン:")
+            for v in affected:
+                lines.append(f"    - {v}")
+        if references:
+            lines.append("  参考URL:")
+            for url in references[:5]:
+                lines.append(f"    - {url}")
+        return "\n".join(lines)
+
     def _extract_affected_versions(self, cve: dict) -> list[str] | None:
         configurations = cve.get("configurations")
         if not configurations:
