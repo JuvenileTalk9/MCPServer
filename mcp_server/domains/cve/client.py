@@ -236,14 +236,67 @@ class CVEClient:
             metrics = cve.get("metrics", {})
             score, severity = self._extract_cvss(metrics)
 
+            affected = self._extract_affected_versions(cve)
+
             lines.append(f"【{cve_id}】")
             lines.append(f"  公開日: {published} | ステータス: {vuln_status}")
             if score:
                 lines.append(f"  深刻度: {severity} (CVSSスコア: {score})")
             lines.append(f"  概要: {description}")
+            if affected:
+                lines.append("  影響バージョン:")
+                for v in affected:
+                    lines.append(f"    - {v}")
             lines.append("")
 
         return "\n".join(lines).strip()
+
+    def _extract_affected_versions(self, cve: dict) -> list[str] | None:
+        configurations = cve.get("configurations")
+        if not configurations:
+            return None
+
+        entries = []
+        seen: set[str] = set()
+
+        for config in configurations:
+            for node in config.get("nodes", []):
+                for match in node.get("cpeMatch", []):
+                    if not match.get("vulnerable"):
+                        continue
+
+                    parts = match.get("criteria", "").split(":")
+                    # cpe:2.3:<part>:<vendor>:<product>:<version>:...
+                    vendor = parts[3] if len(parts) > 3 else ""
+                    product = parts[4] if len(parts) > 4 else ""
+                    version = parts[5] if len(parts) > 5 else ""
+
+                    start_inc = match.get("versionStartIncluding")
+                    start_exc = match.get("versionStartExcluding")
+                    end_inc = match.get("versionEndIncluding")
+                    end_exc = match.get("versionEndExcluding")
+
+                    if any([start_inc, start_exc, end_inc, end_exc]):
+                        range_parts = []
+                        if start_inc:
+                            range_parts.append(f">= {start_inc}")
+                        elif start_exc:
+                            range_parts.append(f"> {start_exc}")
+                        if end_inc:
+                            range_parts.append(f"<= {end_inc}")
+                        elif end_exc:
+                            range_parts.append(f"< {end_exc}")
+                        label = f"{vendor}:{product} {', '.join(range_parts)}"
+                    elif version and version != "*":
+                        label = f"{vendor}:{product} {version}"
+                    else:
+                        label = f"{vendor}:{product}"
+
+                    if label not in seen:
+                        seen.add(label)
+                        entries.append(label)
+
+        return entries if entries else None
 
     def _extract_cvss(self, metrics: dict) -> tuple[str | None, str | None]:
         for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
