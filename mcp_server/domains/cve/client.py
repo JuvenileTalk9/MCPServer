@@ -313,6 +313,11 @@ class CVEClient:
             if ref.get("url")
         ]
 
+        jvn_url = next(
+            (url for url in references if "jvndb.jvn.jp" in url),
+            f"https://jvndb.jvn.jp/search/index.php?mode=_vulnerability_search_IA_VulnSearch&lang=ja&keyword={cve_id}",
+        )
+
         lines = [
             f"【{cve_id}】",
             f"  公開日: {published} | 最終更新: {last_modified} | ステータス: {vuln_status}",
@@ -324,6 +329,7 @@ class CVEClient:
             lines.append("  影響バージョン:")
             for v in affected:
                 lines.append(f"    - {v}")
+        lines.append(f"  JVN iPedia: {jvn_url}")
         if references:
             lines.append("  参考URL:")
             for url in references[:5]:
